@@ -74,6 +74,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 PLATFORMS = [
     Platform.BINARY_SENSOR,
+    Platform.BUTTON,
     Platform.COVER,
     Platform.FAN,
     Platform.LIGHT,
@@ -222,15 +223,22 @@ def _async_register_button_devices(
     seen = set()
 
     for device in button_devices_by_id.values():
-        if "serial" not in device or device["serial"] in seen:
+
+        device_serial = device["serial"]
+        device_name = device["name"]
+        if "parentdevice_serial" in device and device["parentdevice_serial"]:
+            device_serial = device["parentdevice_serial"]
+            device_name = device["parentdevice_name"]
+
+        if "serial" not in device or device_serial in seen:
             continue
-        seen.add(device["serial"])
-        area, name = _area_and_name_from_name(device["name"])
+        seen.add(device_serial)
+        area, name = _area_and_name_from_name(device_name)
         device_args: dict[str, Any] = {
             "name": f"{area} {name}",
             "manufacturer": MANUFACTURER,
             "config_entry_id": config_entry_id,
-            "identifiers": {(DOMAIN, device["serial"])},
+            "identifiers": {(DOMAIN, device_serial)},
             "model": f"{device['model']} ({device['type']})",
             "via_device": (DOMAIN, bridge_device["serial"]),
         }
@@ -286,12 +294,15 @@ def _async_subscribe_pico_remote_events(
         area, name = _area_and_name_from_name(device["name"])
         leap_button_number = device["button_number"]
         lip_button_number = async_get_lip_button(type_, leap_button_number)
-        hass_device = dev_reg.async_get_device({(DOMAIN, device["serial"])})
+        device_serial = device["serial"]
+        if "parentdevice_serial" in device and device["parentdevice_serial"]:
+            device_serial = device["parentdevice_serial"]
+        hass_device = dev_reg.async_get_device({(DOMAIN, device_serial)})
 
         hass.bus.async_fire(
             LUTRON_CASETA_BUTTON_EVENT,
             {
-                ATTR_SERIAL: device["serial"],
+                ATTR_SERIAL: device_serial,
                 ATTR_TYPE: type_,
                 ATTR_BUTTON_NUMBER: lip_button_number,
                 ATTR_LEAP_BUTTON_NUMBER: leap_button_number,
@@ -340,16 +351,26 @@ class LutronCasetaDevice(Entity):
         self._bridge_unique_id = serial_to_unique_id(bridge_device["serial"])
         if "serial" not in self._device:
             return
+        device_serial = self._handle_none_serial(self.serial)
         area, name = _area_and_name_from_name(device["name"])
-        self._attr_name = full_name = f"{area} {name}"
+        self._attr_name = device_name = f"{area} {name}"
+
+        area, name = _area_and_name_from_name(device_name)
+
         info = DeviceInfo(
-            identifiers={(DOMAIN, self._handle_none_serial(self.serial))},
+            identifiers={(DOMAIN, device_serial)},
             manufacturer=MANUFACTURER,
             model=f"{device['model']} ({device['type']})",
-            name=full_name,
+            name=device_name,
             via_device=(DOMAIN, self._bridge_device["serial"]),
             configuration_url=CONFIG_URL,
         )
+
+        if "parentdevice_serial" in device and device["parentdevice_serial"]:
+            info = DeviceInfo(
+                identifiers={(DOMAIN, device["parentdevice_serial"])},
+            )
+
         if area != UNASSIGNED_AREA:
             info[ATTR_SUGGESTED_AREA] = area
         self._attr_device_info = info
@@ -382,7 +403,10 @@ class LutronCasetaDevice(Entity):
     @property
     def extra_state_attributes(self):
         """Return the state attributes."""
-        return {"device_id": self.device_id, "zone_id": self._device["zone"]}
+        attribs = {"device_id": self.device_id}
+        if self._device.get("zone"):
+            attribs["zone_id"] = self._device["zone"]
+        return attribs
 
 
 class LutronCasetaDeviceUpdatableEntity(LutronCasetaDevice):
