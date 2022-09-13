@@ -21,10 +21,18 @@ async def async_setup_entry(
     bridge = data.bridge
     bridge_device = data.bridge_device
     button_devices = bridge.get_buttons()
+    non_caseta_button_devices: dict[str, dict] = {}
+
+    for button_device_id in button_devices:
+        if button_devices[button_device_id]["serial"] is None:
+            non_caseta_button_devices.setdefault(
+                str(button_device_id),
+                button_devices[button_device_id],
+            )
 
     async_add_entities(
         LutronCasetaButton(button_devices[button_device_id], bridge, bridge_device)
-        for button_device_id in button_devices
+        for button_device_id in non_caseta_button_devices
     )
 
 
