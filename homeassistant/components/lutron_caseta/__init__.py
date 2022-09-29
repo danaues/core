@@ -178,7 +178,7 @@ async def async_setup_entry(
     buttons = bridge.buttons
     _async_register_bridge_device(hass, entry_id, bridge_device)
     button_devices = _async_register_button_devices(
-        hass, entry_id, bridge_device, buttons
+        hass, entry_id, bridge, bridge_device, buttons
     )
     _async_subscribe_pico_remote_events(hass, bridge, buttons)
 
@@ -213,29 +213,55 @@ def _async_register_bridge_device(
 def _async_register_button_devices(
     hass: HomeAssistant,
     config_entry_id: str,
+    bridge,
     bridge_device,
     button_devices_by_id: dict[int, dict],
 ) -> dict[str, dict]:
     """Register button devices (Pico Remotes) in the device registry."""
     device_registry = dr.async_get(hass)
     button_devices_by_dr_id: dict[str, dict] = {}
-    seen = set()
+    # seen = set()
+    bridge_devices = bridge.get_devices()
 
     for device in button_devices_by_id.values():
-        if "serial" not in device or device["serial"] in seen:
-            continue
-        seen.add(device["serial"])
-        area, name = _area_and_name_from_name(device["name"])
+
+        # get parent device
+        # if "parent_device" in device:
+        parent_device = bridge_devices[device["parent_device"]]
+
+        ha_device_name_suffix = ""
+        ha_device_name_prefix = ""
+
+        if "control_station_name" in parent_device:
+            ha_device_name_prefix = parent_device["control_station_name"] + " "
+            if "Pico" in parent_device["type"]:
+                ha_device_name_suffix = " Pico"
+            elif "Keypad" in parent_device["type"]:
+                ha_device_name_suffix = " Keypad"
+
+        ha_device_name = "".join(
+            (ha_device_name_prefix, parent_device["device_name"], ha_device_name_suffix)
+        )
+
+        ha_device_identifiers = parent_device["serial"]
+        ha_device_model = f"{parent_device['model']} ({parent_device['type']})"
+        ha_device_via_device = bridge_device["serial"]
+        ha_device_area = bridge.areas[parent_device["area"]]["name"]
+
+        # if "serial" not in device or device["serial"] in seen:
+        #    continue
+        # seen.add(device["serial"])
+        # area, name = _area_and_name_from_name(device["name"])
         device_args: dict[str, Any] = {
-            "name": f"{area} {name}",
+            "name": f"{ha_device_area} {ha_device_name}",
             "manufacturer": MANUFACTURER,
             "config_entry_id": config_entry_id,
-            "identifiers": {(DOMAIN, device["serial"])},
-            "model": f"{device['model']} ({device['type']})",
-            "via_device": (DOMAIN, bridge_device["serial"]),
+            "identifiers": {(DOMAIN, ha_device_identifiers)},
+            "model": f"{ha_device_model}",
+            "via_device": (DOMAIN, ha_device_via_device),
         }
-        if area != UNASSIGNED_AREA:
-            device_args["suggested_area"] = area
+        if ha_device_area != UNASSIGNED_AREA:
+            device_args["suggested_area"] = ha_device_area
 
         dr_device = device_registry.async_get_or_create(**device_args)
         button_devices_by_dr_id[dr_device.id] = device
