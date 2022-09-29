@@ -227,8 +227,8 @@ def _async_register_button_devices(
 
         parent_device = bridge_devices[device["parent_device"]]
 
-        ha_device_name_suffix = ""
         ha_device_name_prefix = ""
+        ha_device_name_suffix = ""
 
         if "control_station_name" in parent_device:
             ha_device_name_prefix = parent_device["control_station_name"] + " "
@@ -317,11 +317,11 @@ def _async_subscribe_pico_remote_events(
         else:
             action = ACTION_RELEASE
 
+        hass_device = dev_reg.async_get_device({(DOMAIN, device["serial"])})
         type_ = _lutron_model_to_device_type(device["model"], device["type"])
         area, name = _area_and_name_from_name(device["name"])
         leap_button_number = device["button_number"]
         lip_button_number = async_get_lip_button(type_, leap_button_number)
-        hass_device = dev_reg.async_get_device({(DOMAIN, device["serial"])})
 
         hass.bus.async_fire(
             LUTRON_CASETA_BUTTON_EVENT,
@@ -373,20 +373,49 @@ class LutronCasetaDevice(Entity):
         self._smartbridge = bridge
         self._bridge_device = bridge_device
         self._bridge_unique_id = serial_to_unique_id(bridge_device["serial"])
+
+        bridge_devices = bridge.get_devices()
+
+        ha_device = device
+
+        ha_device_name_prefix = ""
+        ha_device_name_suffix = ""
+
+        if "parent_device" in device and device["parent_device"] is not None:
+            ha_device = bridge_devices[device["parent_device"]]
+
+        ha_device_identifiers = self._handle_none_serial(ha_device["serial"])
+        ha_device_model = f"{ha_device['model']} ({ha_device['type']})"
+        ha_device_via_device = bridge_device["serial"]
+        ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
+
+        if "control_station_name" in ha_device:
+            ha_device_name_prefix = ha_device["control_station_name"] + " "
+            if "Pico" in ha_device["type"]:
+                ha_device_name_suffix = " Pico"
+            elif "Keypad" in ha_device["type"]:
+                ha_device_name_suffix = " Keypad"
+
+        ha_device_name = "".join(
+            (ha_device_name_prefix, ha_device["device_name"], ha_device_name_suffix)
+        )
+
         if "serial" not in self._device:
             return
-        area, name = _area_and_name_from_name(device["name"])
-        self._attr_name = full_name = f"{area} {name}"
+
+        entity_name = " ".join((ha_device_name, device["device_name"]))
+        # area, name = _area_and_name_from_name(device["name"])
+        self._attr_name = f"{ha_device_area} {entity_name}"
         info = DeviceInfo(
-            identifiers={(DOMAIN, self._handle_none_serial(self.serial))},
+            identifiers={(DOMAIN, ha_device_identifiers)},
             manufacturer=MANUFACTURER,
-            model=f"{device['model']} ({device['type']})",
-            name=full_name,
-            via_device=(DOMAIN, self._bridge_device["serial"]),
+            model=f"{ha_device_model}",
+            name=f"{ha_device_area} {ha_device_name}",
+            via_device=(DOMAIN, ha_device_via_device),
             configuration_url=CONFIG_URL,
         )
-        if area != UNASSIGNED_AREA:
-            info[ATTR_SUGGESTED_AREA] = area
+        if ha_device_area != UNASSIGNED_AREA:
+            info[ATTR_SUGGESTED_AREA] = ha_device_area
         self._attr_device_info = info
 
     async def async_added_to_hass(self):
