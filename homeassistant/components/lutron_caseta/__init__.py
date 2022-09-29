@@ -79,6 +79,7 @@ PLATFORMS = [
     Platform.LIGHT,
     Platform.SCENE,
     Platform.SWITCH,
+    Platform.BUTTON,
 ]
 
 
@@ -180,7 +181,7 @@ async def async_setup_entry(
     button_devices = _async_register_button_devices(
         hass, entry_id, bridge, bridge_device, buttons
     )
-    _async_subscribe_pico_remote_events(hass, bridge, buttons)
+    _async_subscribe_pico_remote_events(hass, bridge, bridge_device, buttons)
 
     # Store this bridge (keyed by entry_id) so it can be retrieved by the
     # platforms we're setting up.
@@ -231,11 +232,11 @@ def _async_register_button_devices(
         seen.add(ha_device_info["ha_device_identifiers"])
 
         device_args: dict[str, Any] = {
-            "name": ha_device_info["ha_device_combined_name"],
+            "name": ha_device_info["ha_device_name_combined"],
             "manufacturer": MANUFACTURER,
             "config_entry_id": config_entry_id,
             "identifiers": {(DOMAIN, ha_device_info["ha_device_identifiers"])},
-            "model": ha_device_info["ha_device_model"],
+            "model": ha_device_info["ha_device_model_combined"],
             "via_device": (DOMAIN, ha_device_info["ha_device_via_device"]),
         }
         if ha_device_info["ha_device_area"] != UNASSIGNED_AREA:
@@ -279,11 +280,6 @@ def _get_ha_device_info(
         has_parent = True
         ha_device = bridge_devices[device["parent_device"]]
 
-    ha_device_identifiers = ha_device["serial"]
-    ha_device_model = f"{ha_device['model']} ({ha_device['type']})"
-    ha_device_via_device = bridge_device["serial"]
-    ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
-
     if "control_station_name" in ha_device:
         ha_device_name_prefix = ha_device["control_station_name"] + " "
         if "Pico" in ha_device["type"]:
@@ -291,6 +287,7 @@ def _get_ha_device_info(
         elif "Keypad" in ha_device["type"]:
             ha_device_name_suffix = " Keypad"
 
+    ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
     ha_device_name = "".join(
         (ha_device_name_prefix, ha_device["device_name"], ha_device_name_suffix)
     )
@@ -299,14 +296,16 @@ def _get_ha_device_info(
         entity_name = " ".join((ha_device_name, entity_name))
 
     ha_device_registry_details = {
-        "ha_device_identifiers": ha_device_identifiers,
-        "ha_device_model": ha_device_model,
-        "ha_device_via_device": ha_device_via_device,
+        "ha_device_identifiers": ha_device["serial"],
+        "ha_device_model": ha_device["model"],
+        "ha_device_type": ha_device["type"],
+        "ha_device_model_combined": " ".join((ha_device["model"], ha_device["type"])),
+        "ha_device_via_device": bridge_device["serial"],
         "ha_device_name": ha_device_name,
         "ha_device_area": ha_device_area,
-        "ha_device_combined_name": " ".join((ha_device_area, ha_device_name)),
+        "ha_device_name_combined": " ".join((ha_device_area, ha_device_name)),
         "entity_name": entity_name,
-        "combined_entity_name": " ".join((ha_device_area, entity_name)),
+        "entity_name_combined": " ".join((ha_device_area, entity_name)),
     }
 
     return ha_device_registry_details
@@ -335,7 +334,8 @@ def async_get_lip_button(device_type: str, leap_button: int) -> int | None:
 @callback
 def _async_subscribe_pico_remote_events(
     hass: HomeAssistant,
-    bridge_device: Smartbridge,
+    bridge: Smartbridge,
+    bridge_device,
     button_devices_by_id: dict[int, dict],
 ):
     """Subscribe to lutron events."""
@@ -351,16 +351,23 @@ def _async_subscribe_pico_remote_events(
         else:
             action = ACTION_RELEASE
 
-        hass_device = dev_reg.async_get_device({(DOMAIN, device["serial"])})
-        type_ = _lutron_model_to_device_type(device["model"], device["type"])
-        area, name = _area_and_name_from_name(device["name"])
+        ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
+
+        hass_device = dev_reg.async_get_device(
+            {(DOMAIN, ha_device_info["ha_device_identifiers"])}
+        )
+        type_ = _lutron_model_to_device_type(
+            ha_device_info["ha_device_model"], ha_device_info["ha_device_type"]
+        )
+        area = ha_device_info["ha_device_area"]
+        name = ha_device_info["ha_device_name"]
         leap_button_number = device["button_number"]
         lip_button_number = async_get_lip_button(type_, leap_button_number)
 
         hass.bus.async_fire(
             LUTRON_CASETA_BUTTON_EVENT,
             {
-                ATTR_SERIAL: device["serial"],
+                ATTR_SERIAL: ha_device_info["ha_device_identifiers"],
                 ATTR_TYPE: type_,
                 ATTR_BUTTON_NUMBER: lip_button_number,
                 ATTR_LEAP_BUTTON_NUMBER: leap_button_number,
@@ -372,7 +379,7 @@ def _async_subscribe_pico_remote_events(
         )
 
     for button_id in button_devices_by_id:
-        bridge_device.add_button_subscriber(
+        bridge.add_button_subscriber(
             str(button_id),
             lambda event_type, button_id=button_id: _async_button_event(
                 button_id, event_type
@@ -413,7 +420,7 @@ class LutronCasetaDevice(Entity):
         if "serial" not in self._device:
             return
 
-        self._attr_name = ha_device_info["combined_entity_name"]
+        self._attr_name = ha_device_info["entity_name_combined"]
         info = DeviceInfo(
             identifiers={
                 (
@@ -422,8 +429,8 @@ class LutronCasetaDevice(Entity):
                 )
             },
             manufacturer=MANUFACTURER,
-            model=ha_device_info["ha_device_model"],
-            name=ha_device_info["ha_device_combined_name"],
+            model=ha_device_info["ha_device_model_combined"],
+            name=ha_device_info["ha_device_name_combined"],
             via_device=(DOMAIN, ha_device_info["ha_device_via_device"]),
             configuration_url=CONFIG_URL,
         )
