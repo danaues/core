@@ -220,13 +220,11 @@ def _async_register_button_devices(
     """Register button devices (Pico Remotes) in the device registry."""
     device_registry = dr.async_get(hass)
     button_devices_by_dr_id: dict[str, dict] = {}
-    # seen = set()
+    seen = set()
     bridge_devices = bridge.get_devices()
 
     for device in button_devices_by_id.values():
 
-        # get parent device
-        # if "parent_device" in device:
         parent_device = bridge_devices[device["parent_device"]]
 
         ha_device_name_suffix = ""
@@ -246,12 +244,12 @@ def _async_register_button_devices(
         ha_device_identifiers = parent_device["serial"]
         ha_device_model = f"{parent_device['model']} ({parent_device['type']})"
         ha_device_via_device = bridge_device["serial"]
-        ha_device_area = bridge.areas[parent_device["area"]]["name"]
+        ha_device_area = _area_name_from_id(bridge.areas, parent_device["area"])
 
-        # if "serial" not in device or device["serial"] in seen:
-        #    continue
-        # seen.add(device["serial"])
-        # area, name = _area_and_name_from_name(device["name"])
+        if "serial" not in device or device["serial"] in seen:
+            continue
+        seen.add(ha_device_identifiers)
+
         device_args: dict[str, Any] = {
             "name": f"{ha_device_area} {ha_device_name}",
             "manufacturer": MANUFACTURER,
@@ -267,6 +265,17 @@ def _async_register_button_devices(
         button_devices_by_dr_id[dr_device.id] = device
 
     return button_devices_by_dr_id
+
+
+def _area_name_from_id(areas: dict[str, dict], area_id: str) -> str:
+    """Return the full area name including parent(s)."""
+    if "parent_area" in areas[area_id]:
+        parent_area = areas[area_id]["parent_id"]
+        if parent_area is not None:
+            return " ".join(
+                (_area_name_from_id(areas, parent_area), areas[area_id]["name"])
+            )
+    return areas[area_id]["name"]
 
 
 def _area_and_name_from_name(device_name: str) -> tuple[str, str]:
