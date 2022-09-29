@@ -294,12 +294,23 @@ def _get_ha_device_info(
 
     if has_parent:
         entity_name = " ".join((ha_device_name, entity_name))
+    ha_device_model = ha_device["model"]
+    if ha_device_model is None:
+        ha_device_model = ""
+
+    ha_device_identifiers = None
+    if "serial" in ha_device:
+        ha_device_identifiers = ha_device["serial"]
+    if ha_device_identifiers is None:
+        ha_device_identifiers = (
+            f"{serial_to_unique_id(bridge_device['serial'])}_{ha_device['device_id']}"
+        )
 
     ha_device_registry_details = {
-        "ha_device_identifiers": ha_device["serial"],
-        "ha_device_model": ha_device["model"],
+        "ha_device_identifiers": ha_device_identifiers,
+        "ha_device_model": ha_device_model,
         "ha_device_type": ha_device["type"],
-        "ha_device_model_combined": " ".join((ha_device["model"], ha_device["type"])),
+        "ha_device_model_combined": " ".join((ha_device_model, ha_device["type"])),
         "ha_device_via_device": bridge_device["serial"],
         "ha_device_name": ha_device_name,
         "ha_device_area": ha_device_area,
@@ -415,10 +426,10 @@ class LutronCasetaDevice(Entity):
         self._bridge_device = bridge_device
         self._bridge_unique_id = serial_to_unique_id(bridge_device["serial"])
 
-        ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
-
         if "serial" not in self._device:
             return
+
+        ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
 
         self._attr_name = ha_device_info["entity_name_combined"]
         info = DeviceInfo(
