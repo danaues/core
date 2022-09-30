@@ -7,12 +7,9 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceEntryType
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import DOMAIN as CASETA_DOMAIN, LutronCasetaDevice, _area_and_name_from_name
-from .const import CONFIG_URL, MANUFACTURER
+from . import DOMAIN as CASETA_DOMAIN, LutronCasetaDevice
 from .models import LutronCasetaData
 
 
@@ -40,21 +37,6 @@ class LutronOccupancySensor(LutronCasetaDevice, BinarySensorEntity):
     """Representation of a Lutron occupancy group."""
 
     _attr_device_class = BinarySensorDeviceClass.OCCUPANCY
-
-    def __init__(self, device, bridge, bridge_device):
-        """Init an occupancy sensor."""
-        super().__init__(device, bridge, bridge_device)
-        _, name = _area_and_name_from_name(device["name"])
-        self._attr_name = name
-        self._attr_device_info = DeviceInfo(
-            identifiers={(CASETA_DOMAIN, self.unique_id)},
-            manufacturer=MANUFACTURER,
-            model="Lutron Occupancy",
-            name=self.name,
-            via_device=(CASETA_DOMAIN, self._bridge_device["serial"]),
-            configuration_url=CONFIG_URL,
-            entry_type=DeviceEntryType.SERVICE,
-        )
 
     @property
     def is_on(self):

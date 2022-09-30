@@ -177,8 +177,11 @@ async def async_setup_entry(
         )
 
     buttons = bridge.buttons
-    _async_register_bridge_device(hass, entry_id, bridge_device)
-    button_devices = _async_register_button_devices(
+
+    bridge_area = _area_name_from_id(bridge.areas, bridge_device["area"])
+
+    _async_register_bridge_device(hass, entry_id, bridge_device, bridge_area)
+    button_devices, device_info_by_device_id = _async_register_button_devices(
         hass, entry_id, bridge, bridge_device, buttons
     )
     _async_subscribe_pico_remote_events(hass, bridge, bridge_device, buttons)
@@ -186,7 +189,7 @@ async def async_setup_entry(
     # Store this bridge (keyed by entry_id) so it can be retrieved by the
     # platforms we're setting up.
     hass.data[DOMAIN][entry_id] = LutronCasetaData(
-        bridge, bridge_device, button_devices
+        bridge, bridge_device, button_devices, device_info_by_device_id
     )
 
     await hass.config_entries.async_forward_entry_setups(config_entry, PLATFORMS)
@@ -196,10 +199,11 @@ async def async_setup_entry(
 
 @callback
 def _async_register_bridge_device(
-    hass: HomeAssistant, config_entry_id: str, bridge_device: dict
+    hass: HomeAssistant, config_entry_id: str, bridge_device: dict, bridge_area: str
 ) -> None:
     """Register the bridge device in the device registry."""
     device_registry = dr.async_get(hass)
+
     device_registry.async_get_or_create(
         name=bridge_device["name"],
         manufacturer=MANUFACTURER,
@@ -207,6 +211,7 @@ def _async_register_bridge_device(
         identifiers={(DOMAIN, bridge_device["serial"])},
         model=f"{bridge_device['model']} ({bridge_device['type']})",
         configuration_url="https://device-login.lutron.com",
+        suggested_area=bridge_area,
     )
 
 
@@ -217,45 +222,78 @@ def _async_register_button_devices(
     bridge,
     bridge_device,
     button_devices_by_id: dict[int, dict],
-) -> dict[str, dict]:
+) -> tuple[dict[str, dict], dict[int, dict[str, Any]]]:
     """Register button devices (Pico Remotes) in the device registry."""
     device_registry = dr.async_get(hass)
     button_devices_by_dr_id: dict[str, dict] = {}
+    device_info_by_device_id: dict[int, dict[str, Any]] = {}
     seen = set()
+    bridge_devices = bridge.get_devices()
 
     for device in button_devices_by_id.values():
 
-        ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
+        # ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
 
-        if "serial" not in device or ha_device_info["ha_device_identifiers"] in seen:
+        ha_device = device
+        if "parent_device" in device and device["parent_device"] is not None:
+            # Device is a child of parent_device
+            # use the parent_device for HA device info
+            ha_device = bridge_devices[device["parent_device"]]
+
+        if "serial" not in ha_device or ha_device["serial"] in seen:
             continue
-        seen.add(ha_device_info["ha_device_identifiers"])
+        seen.add(ha_device["serial"])
+
+        ha_device_name_prefix = ""
+        ha_device_name_suffix = ""
+        ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
+
+        if "control_station_name" in ha_device:
+            # RA3/HWQSX Control Pico or Keypad, Assemble the Device Name
+            ha_device_name_prefix = ha_device["control_station_name"]
+            if "Pico" in ha_device["type"]:
+                ha_device_name_suffix = "Pico"
+            elif "Keypad" in ha_device["type"]:
+                ha_device_name_suffix = " Keypad"
+
+        ha_device_name_parts = [
+            ha_device_name_prefix,
+            ha_device["device_name"],
+            ha_device_name_suffix,
+        ]
+        ha_device_name = " ".join(filter(None, ha_device_name_parts))
 
         device_args: dict[str, Any] = {
-            "name": ha_device_info["ha_device_name_combined"],
+            "name": ha_device_name,
             "manufacturer": MANUFACTURER,
             "config_entry_id": config_entry_id,
-            "identifiers": {(DOMAIN, ha_device_info["ha_device_identifiers"])},
-            "model": ha_device_info["ha_device_model_combined"],
-            "via_device": (DOMAIN, ha_device_info["ha_device_via_device"]),
+            "identifiers": {(DOMAIN, ha_device["serial"])},
+            "model": " ".join((ha_device["model"], ha_device["type"])),
+            "via_device": (DOMAIN, bridge_device["serial"]),
         }
-        if ha_device_info["ha_device_area"] != UNASSIGNED_AREA:
-            device_args["suggested_area"] = ha_device_info["ha_device_area"]
+        if ha_device_area != UNASSIGNED_AREA:
+            device_args["suggested_area"] = ha_device_area
 
         dr_device = device_registry.async_get_or_create(**device_args)
         button_devices_by_dr_id[dr_device.id] = device
+        device_info_by_device_id.setdefault(ha_device["device_id"], device_args)
 
-    return button_devices_by_dr_id
+    return button_devices_by_dr_id, device_info_by_device_id
 
 
 def _area_name_from_id(areas: dict[str, dict], area_id: str) -> str:
     """Return the full area name including parent(s)."""
+
+    if area_id is None:
+        return None
+
     if "parent_id" in areas[area_id]:
         parent_area = areas[area_id]["parent_id"]
         if parent_area is not None:
             return " ".join(
                 (_area_name_from_id(areas, parent_area), areas[area_id]["name"])
             )
+
     return areas[area_id]["name"]
 
 
@@ -264,70 +302,84 @@ def _get_ha_device_info(
 ) -> dict:
     """Return a dict with details for registering a deviceregistry and entity creation."""
 
+    bridge_unique_id = serial_to_unique_id(bridge_device["serial"])
     bridge_devices = bridge.get_devices()
 
     ha_device = device
 
     ha_device_name_prefix = ""
     ha_device_name_suffix = ""
-    has_parent = False
-    entity_name = ""
-
-    if "device_name" in device:
-        entity_name = device["device_name"]
+    entity_name_suffix = None
 
     if "parent_device" in device and device["parent_device"] is not None:
-        has_parent = True
+        # Device is a child of parent_device
+        # use the parent_device for HA device info
         ha_device = bridge_devices[device["parent_device"]]
+        if "device_name" in device:
+            # Child Device has the device_name field, use it entity name suffix
+            entity_name_suffix = device["device_name"]
+
+    ha_device_area = ""
+    if "area" in ha_device:
+        ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
 
     if "control_station_name" in ha_device:
-        ha_device_name_prefix = ha_device["control_station_name"] + " "
+        # RA3/HWQSX Control Pico or Keypad, Assemble the Device Name
+        ha_device_name_prefix = ha_device["control_station_name"]
         if "Pico" in ha_device["type"]:
-            ha_device_name_suffix = " Pico"
+            ha_device_name_suffix = "Pico"
         elif "Keypad" in ha_device["type"]:
             ha_device_name_suffix = " Keypad"
 
-    ha_device_area = _area_name_from_id(bridge.areas, ha_device["area"])
-    ha_device_name = "".join(
-        (ha_device_name_prefix, ha_device["device_name"], ha_device_name_suffix)
-    )
+    ha_device_name_parts = [
+        ha_device_name_prefix,
+        ha_device["device_name"],
+        ha_device_name_suffix,
+    ]
+    ha_device_name = " ".join(filter(None, ha_device_name_parts))
 
-    if has_parent:
-        entity_name = " ".join((ha_device_name, entity_name))
-    ha_device_model = ha_device["model"]
+    ha_device_model = ha_device.get("model", "")
     if ha_device_model is None:
         ha_device_model = ""
 
-    ha_device_identifiers = None
-    if "serial" in ha_device:
-        ha_device_identifiers = ha_device["serial"]
-    if ha_device_identifiers is None:
+    ha_device_type = ha_device.get("type", "")
+    if ha_device_type is None:
+        ha_device_type = ""
+
+    if "occupancy_group_id" in ha_device:
+        # This is an occupancy sensor, it does not have
+        # these fields (serial, model or type)
+        # override the identifier, model and type
         ha_device_identifiers = (
-            f"{serial_to_unique_id(bridge_device['serial'])}_{ha_device['device_id']}"
+            f"occupancygroup_{bridge_unique_id}_{ha_device['occupancy_group_id']}"
+        )
+        ha_device_model = "NA"
+        ha_device_type = "RPSOccupancySensor"
+    else:
+        ha_device_identifiers = str(
+            _handle_none_serial(
+                ha_device.get("serial", None), bridge_unique_id, ha_device["device_id"]
+            )
         )
 
-    ha_device_registry_details = {
+    return {
         "ha_device_identifiers": ha_device_identifiers,
         "ha_device_model": ha_device_model,
-        "ha_device_type": ha_device["type"],
-        "ha_device_model_combined": " ".join((ha_device_model, ha_device["type"])),
+        "ha_device_type": ha_device_type,
+        "ha_device_model_combined": " ".join((ha_device_model, ha_device_type)),
         "ha_device_via_device": bridge_device["serial"],
         "ha_device_name": ha_device_name,
         "ha_device_area": ha_device_area,
         "ha_device_name_combined": " ".join((ha_device_area, ha_device_name)),
-        "entity_name": entity_name,
-        "entity_name_combined": " ".join((ha_device_area, entity_name)),
+        "entity_name_suffix": entity_name_suffix,
     }
 
-    return ha_device_registry_details
 
-
-def _area_and_name_from_name(device_name: str) -> tuple[str, str]:
-    """Return the area and name from the devices internal name."""
-    if "_" in device_name:
-        area_device_name = device_name.split("_", 1)
-        return area_device_name[0], area_device_name[1]
-    return UNASSIGNED_AREA, device_name
+def _handle_none_serial(serial: str | None, bridge_unique_id, device_id) -> str | int:
+    """Handle None serial returned by RA3 and QSX processors."""
+    if serial is None:
+        return f"{bridge_unique_id}_{device_id}"
+    return serial
 
 
 @callback
@@ -371,7 +423,7 @@ def _async_subscribe_pico_remote_events(
             ha_device_info["ha_device_model"], ha_device_info["ha_device_type"]
         )
         area = ha_device_info["ha_device_area"]
-        name = ha_device_info["ha_device_name"]
+        name = ha_device_info["ha_device_name_combined"]
         leap_button_number = device["button_number"]
         lip_button_number = async_get_lip_button(type_, leap_button_number)
 
@@ -414,7 +466,13 @@ class LutronCasetaDevice(Entity):
 
     _attr_should_poll = False
 
-    def __init__(self, device, bridge, bridge_device):
+    def __init__(
+        self,
+        device,
+        bridge,
+        bridge_device,
+        device_info_by_device_id=None,
+    ):
         """Set up the base class.
 
         [:param]device the device metadata
@@ -426,19 +484,30 @@ class LutronCasetaDevice(Entity):
         self._bridge_device = bridge_device
         self._bridge_unique_id = serial_to_unique_id(bridge_device["serial"])
 
-        if "serial" not in self._device:
-            return
+        # if "serial" not in self._device:
+        #    return
+
+        if "parent_device" in device:
+            if device_info_by_device_id is not None:
+                parent_device_info = device_info_by_device_id.get(
+                    device["parent_device"], None
+                )
+                if parent_device_info is not None:
+                    self._attr_name = " ".join(
+                        (parent_device_info["name"], device["device_name"], "ktst")
+                    )
+                    self._attr_device_info = parent_device_info
+                    return
 
         ha_device_info = _get_ha_device_info(bridge, bridge_device, device)
 
-        self._attr_name = ha_device_info["entity_name_combined"]
+        entity_name = ha_device_info["ha_device_name_combined"]
+        if ha_device_info["entity_name_suffix"] is not None:
+            entity_name = " ".join((entity_name, ha_device_info["entity_name_suffix"]))
+
+        self._attr_name = entity_name
         info = DeviceInfo(
-            identifiers={
-                (
-                    DOMAIN,
-                    self._handle_none_serial(ha_device_info["ha_device_identifiers"]),
-                )
-            },
+            identifiers={(DOMAIN, ha_device_info["ha_device_identifiers"])},
             manufacturer=MANUFACTURER,
             model=ha_device_info["ha_device_model_combined"],
             name=ha_device_info["ha_device_name_combined"],
@@ -453,12 +522,6 @@ class LutronCasetaDevice(Entity):
         """Register callbacks."""
         self._smartbridge.add_subscriber(self.device_id, self.async_write_ha_state)
 
-    def _handle_none_serial(self, serial: str | None) -> str | int:
-        """Handle None serial returned by RA3 and QSX processors."""
-        if serial is None:
-            return f"{self._bridge_unique_id}_{self.device_id}"
-        return serial
-
     @property
     def device_id(self):
         """Return the device ID used for calling pylutron_caseta."""
@@ -472,7 +535,9 @@ class LutronCasetaDevice(Entity):
     @property
     def unique_id(self) -> str:
         """Return the unique ID of the device (serial)."""
-        return str(self._handle_none_serial(self.serial))
+        return str(
+            _handle_none_serial(self.serial, self._bridge_unique_id, self.device_id)
+        )
 
     @property
     def extra_state_attributes(self):

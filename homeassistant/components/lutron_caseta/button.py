@@ -21,6 +21,7 @@ async def async_setup_entry(
     bridge = data.bridge
     bridge_device = data.bridge_device
     button_devices = bridge.get_buttons()
+
     non_caseta_button_devices: dict[str, dict] = {}
 
     for button_device_id in button_devices:
@@ -31,7 +32,12 @@ async def async_setup_entry(
             )
 
     async_add_entities(
-        LutronCasetaButton(button_devices[button_device_id], bridge, bridge_device)
+        LutronCasetaButton(
+            button_devices[button_device_id],
+            bridge,
+            bridge_device,
+            data.device_info_by_device_id,
+        )
         for button_device_id in non_caseta_button_devices
     )
 
