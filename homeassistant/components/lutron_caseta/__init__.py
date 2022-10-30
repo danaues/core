@@ -84,6 +84,13 @@ PLATFORMS = [
     Platform.BUTTON,
 ]
 
+KEYPAD_SIMPLE_NAMES = {
+    "Pico": "Pico",
+    "Keypad": "Keypad",
+    "SeeTouch": "Keypad",
+    "4GroupRemote": "Remote",
+}
+
 
 async def async_setup(hass: HomeAssistant, base_config: ConfigType) -> bool:
     """Set up the Lutron component."""
@@ -314,7 +321,7 @@ def _async_build_lutron_keypad(
     # First time seeing this keypad, build keypad data and store in keypads
 
     area_name = _area_name_from_id(bridge.areas, bridge_keypad["area"])
-    keypad_name = bridge_keypad["name"].split("_")[-1]
+    keypad_name = _keypad_name_from_device(bridge_keypad)
     keypad_serial = _handle_none_keypad_serial(bridge_keypad, bridge_device["serial"])
     device_info = DeviceInfo(
         name=f"{area_name} {keypad_name}",
@@ -338,6 +345,33 @@ def _async_build_lutron_keypad(
         type=bridge_keypad["type"],
         buttons=[],
     )
+
+
+def _keypad_name_from_device(bridge_keypad: dict[str, Any]) -> str:
+    """Return the assembled keypad name."""
+    # Build the name of the Keypad/Pico
+    keypad_name = bridge_keypad["device_name"]
+    keypad_name_prefix = ""
+    keypad_name_suffix = ""
+    keypad_gang_position = ""
+    if "control_station_name" in bridge_keypad:
+        # RA3/HWQSX Control Pico or Keypad, Assemble the Device Name
+        keypad_name_prefix = bridge_keypad["control_station_name"]
+        if int(bridge_keypad["gang_count"]) > 1:
+            keypad_gang_position = (
+                f"{make_ordinal(int(bridge_keypad['gang_position'])+1)} pos."
+            )
+        for namesub, simplename in KEYPAD_SIMPLE_NAMES.items():
+            if namesub in bridge_keypad["type"]:
+                keypad_name_suffix = simplename
+                break
+        keypad_name_parts = [
+            keypad_name_prefix,
+            keypad_name_suffix,
+            keypad_gang_position,
+        ]
+        keypad_name = " ".join(filter(None, keypad_name_parts))
+    return keypad_name
 
 
 def _get_button_name(keypad: LutronKeypad, bridge_button: dict[str, Any]) -> str:
@@ -454,6 +488,23 @@ def _async_subscribe_keypad_events(
                 button_id, event_type
             ),
         )
+
+
+def make_ordinal(digit: int):
+    """
+    Convert an integer into its ordinal representation.
+
+        make_ordinal(0)   => '0th'
+        make_ordinal(3)   => '3rd'
+        make_ordinal(122) => '122nd'
+        make_ordinal(213) => '213th'
+    """
+    digit = int(digit)
+    if 11 <= (digit % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = ["th", "st", "nd", "rd", "th"][min(digit % 10, 4)]
+    return str(digit) + suffix
 
 
 async def async_unload_entry(
